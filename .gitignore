@@ -1,0 +1,6 @@
+.env
+logs/
+grafana/data/
+loki/data/
+letsencrypt/
+prometheus/data/

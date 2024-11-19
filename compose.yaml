@@ -1,0 +1,218 @@
+version: "3.7"
+x-logging: &a1
+  driver: json-file
+  options:
+    tag: "{{.ImageName}}|{{.Name}}|{{.ImageFullID}}|{{.FullID}}"
+services:
+  traefik:
+    # run as root, update to rootless mode later
+    user: 0:0
+    hostname: traefik
+    container_name: traefik
+    image: traefik:2.10
+    environment:
+      - TZ=Europe/Lisbon
+      - CLOUDFLARE_EMAIL=${CLOUDFLARE_EMAIL}
+      - CLOUDFLARE_API_KEY=${CLOUDFLARE_API_KEY}
+      - CLOUDFLARE_DNS_API_TOKEN=${CLOUDFLARE_DNS_API_TOKEN}
+    command:
+      # exposes the traffic you might not want to expose. remove in production
+      - --log.level=INFO
+      - --log.filePath=/traefik/logs/traefik.log
+      - --providers.docker=true
+      - --api=true
+      - --api.insecure=true
+      - --api.dashboard=true
+      - --metrics.prometheus=true
+      - --metrics.prometheus.entryPoint=metrics
+      - --entryPoints.metrics.address=:8082
+      - --metrics.prometheus.buckets=0.1,0.3,1.2,5.0
+      - --accesslog=true
+      - --accesslog.filepath=/traefik/logs/access.log
+      - --accesslog.bufferingsize=2048
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --serverstransport.insecureskipverify=true
+      - --providers.file.filename=/etc/traefik/services.yml
+      - --entrypoints.web.address=:80
+      - --entrypoints.web.http.redirections.entryPoint.to=websecure
+      - --entrypoints.web.http.redirections.entryPoint.scheme=https
+      - --entrypoints.websecure.address=:443
+      - --entrypoints.websecure.http3
+      - --experimental.http3=true
+      - --entrypoints.services5048.address=:5048
+      - --certificatesresolvers.myresolver.acme.httpchallenge=true
+      - --certificatesresolvers.myresolver.acme.httpchallenge.entrypoint=web
+      - --certificatesresolvers.myresolver.acme.email=pedrosantos@ebconsultores.pt
+      - --certificatesresolvers.myresolver.acme.storage=/letsencrypt/acme.json
+      - --certificatesresolvers.resolvercloudflare.acme.email=pedrosantos@ebconsultores.pt
+      - --certificatesresolvers.resolvercloudflare.acme.storage=/letsencrypt/acme-cloudflare.json
+      - --certificatesresolvers.resolvercloudflare.acme.dnsChallenge=true # * DNS challenge, there are other ways of proving that you owned domain name defined below (https://doc.traefik.io/traefik/https/acme/#dnschallenge)
+      - --certificatesresolvers.resolvercloudflare.acme.dnsChallenge.provider=cloudflare
+    labels:
+      - traefik.enable=true
+      - traefik.http.middlewares.vpnIPwhitelist.ipwhitelist.sourcerange=192.168.2.0/24,
+        148.71.183.199/32
+      - traefik.http.middlewares.sslheader.headers.customrequestheaders.X-Forwarded-Proto=https
+      - traefik.http.routers.api.entryPoints=traefik
+      - traefik.http.routers.api.rule=PathPrefix(`/api`) ||
+        PathPrefix(`/dashboard`)
+      - traefik.http.routers.api.service=api@internal
+      - traefik.http.routers.ebapi.entrypoints=web
+      - traefik.http.routers.ebapi.rule=PathPrefix(`/oper`)
+      - traefik.http.routers.ebapi.service=ebapi@file
+      - traefik.http.routers.servicesapi5048.entrypoints=services5048
+      - traefik.http.routers.servicesapi5048.rule=Host(`doc.services.ebconsultores.pt`)
+      - traefik.http.routers.servicesapi5048.service=servicesapi5048@file
+      - traefik.http.routers.servicesapi5831.entrypoints=services5048
+      - traefik.http.routers.servicesapi5831.rule=Host(`operacional.services.ebconsultores.pt`)
+      - traefik.http.routers.servicesapi5831.service=servicesapi5831@file
+      - traefik.http.routers.scanservices.entrypoints=services5048
+      - traefik.http.routers.scanservices.rule=Host(`scan.services.ebconsultores.pt`)
+      - traefik.http.routers.scanservices.service=scanservices@file
+      - traefik.http.routers.servicedoc.entrypoints=web,websecure
+      - traefik.http.routers.servicedoc.rule=Host(`doc.ebia.pt`)
+      - traefik.http.routers.servicedoc.service=servicesapi5048@file
+      - traefik.http.routers.servicedoc.tls=true
+      - traefik.http.routers.servicedoc.tls.certresolver=resolvercloudflare
+      # gitBIA
+      - traefik.http.routers.servicegitbia.entrypoints=web,websecure
+      - traefik.http.routers.servicegitbia.rule=Host(`git.ebia.pt`)
+      - traefik.http.routers.servicegitbia.service=servicegitbia@file
+      - traefik.http.routers.servicegitbia.tls=true
+      - traefik.http.routers.servicegitbia.tls.certresolver=resolvercloudflare
+    ports:
+      - 80:80
+      - 443:443/tcp
+      - 443:443/udp
+      - 8090:8080
+      - 5048:5048
+      #- 8443:8443
+    volumes:
+      - ./letsencrypt:/letsencrypt
+      - ./logs:/traefik/logs
+      - ./config/services.yml:/etc/traefik/services.yml
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - traefik_default
+      - internalnetwork
+    restart: unless-stopped
+    logging: *a1
+  prometheus:
+    # run as root, update to rootless mode later
+    user: 0:0
+    hostname: prometheus
+    container_name: prometheus
+    image: prom/prometheus
+    depends_on:
+      - traefik
+    volumes:
+      - ./prometheus/settings/:/etc/prometheus/
+      - ./prometheus/data:/prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.size=256MB
+    networks:
+      - internalnetwork
+    restart: unless-stopped
+    logging: *a1
+  grafana:
+    # run as root, update to rootless mode later
+    user: 0:0
+    hostname: grafana
+    container_name: grafana
+    image: grafana/grafana
+    depends_on:
+      - traefik
+      - prometheus
+    volumes:
+      - ./grafana/data:/var/lib/grafana
+      - ./grafana/settings/:/etc/grafana/provisioning/
+    networks:
+      - traefik_default
+      - internalnetwork
+    restart: unless-stopped
+    ports:
+      - 3000:3000
+    logging: *a1
+  loki:
+    # run as root, update to rootless mode later
+    user: 0:0
+    hostname: loki
+    container_name: loki
+    image: grafana/loki:2.9.0
+    command: -config.file=/mnt/config/loki-config.yml
+    restart: unless-stopped
+    volumes:
+      - ./loki/data:/loki
+      - ./loki/settings/loki-config.yml:/mnt/config/loki-config.yml
+    ports:
+      - 127.0.0.1:3100:3100
+    networks:
+      - internalnetwork
+    logging: *a1
+  promtail:
+    # run as root, update to rootless mode later
+    user: 0:0
+    hostname: promtail
+    container_name: promtail
+    restart: unless-stopped
+    image: grafana/promtail:2.9.0
+    volumes:
+      # logs for linux host only
+      #- /var/log:/host/log
+      - /var/lib/docker/containers:/host/containers
+      - ./promtail/settings/promtail-config.yaml:/mnt/config/promtail-config.yaml
+    command: -config.file /mnt/config/promtail-config.yaml
+    networks:
+      - internalnetwork
+    logging: *a1
+  nodeexporter:
+    image: prom/node-exporter
+    container_name: nodeexporter
+    hostname: nodeexporter
+    restart: unless-stopped
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    command:
+      - --path.procfs=/host/proc
+      - --path.rootfs=/rootfs
+      - --path.sysfs=/host/sys
+      - --collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)
+    expose:
+      - 9100
+    networks:
+      - internalnetwork
+    logging: *a1
+  #whoami:
+  #  image: "traefik/whoami"
+  #  container_name: "service-whoami"
+  #  labels:
+  #    - "traefik.enable=true"
+  #    - "traefik.http.routers.whoami.rule=Host(`api.services.ebconsultores.pt`)"
+  #    - "traefik.http.routers.whoami.entrypoints=services8443"
+  #    #- "traefik.http.routers.whoami.tls=true"
+  #    #- "traefik.http.routers.whoami.tls.certresolver=myresolver"
+  #    #- "traefik.http.routers.whoami.middlewares=vpnIPwhitelist"
+  #  networks:
+  #    - traefik_default
+  #  logging: *loki-logging
+
+networks:
+  traefik_default:
+    name: traefik_default
+    driver: bridge
+    internal: false
+    attachable: false
+    #external: true
+
+  internalnetwork:
+    name: internalnetwork
+    driver: bridge
+    internal: true
+    attachable: true
+    #external: false
+

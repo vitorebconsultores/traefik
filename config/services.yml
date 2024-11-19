@@ -1,0 +1,28 @@
+http:
+  services:
+    ebapi:
+      loadBalancer:
+        servers:
+          - url: "http://192.168.2.10:5023/oper"
+    cloud:
+      loadBalancer:
+        servers:
+          - url: "http://192.168.2.3"
+    servicesapi5048:
+      loadBalancer:
+        servers:
+          - url: "http://192.168.2.10:5048"
+    servicesapi5831:
+      loadBalancer:
+        servers:
+          - url: "http://192.168.2.10:5831"
+    scanservices:
+      loadBalancer:
+        servers:
+          - url: "http://192.168.2.10:5832"
+    servicegitbia:
+      loadBalancer:
+        servers:
+          - url: "https://192.168.2.18"
+
+          
